@@ -1,14 +1,10 @@
-#ifndef LISTH
-#define LISTH
-
 /**
- * Double-linked list implementation totally copied from `<linux/list.h>`
- * The code is almost identical to the original, it was basically simplified
- * to run on user space. The `hlist` API is not included in this version.
- *
- * The original code:
- *   https://elixir.bootlin.com/linux/latest/source/include/linux/list.h
+ * Linux's double linked list ripped and slightly changed to fit in user space.
+ * Original code: https://elixir.bootlin.com/linux/latest/source/include/linux/list.h
  */
+
+#ifndef _LINUX_LIST_H
+#define _LINUX_LIST_H
 
 #include <stddef.h> /* offsetof */
 
