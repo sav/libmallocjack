@@ -1,2 +1,4 @@
 *.so
 test
+test-ld
+*.dSYM
