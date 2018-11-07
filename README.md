@@ -8,10 +8,8 @@ Built-in modules
 ----------------
 
 ### memstat
-Print overall process and function statistics. Define
-MALLOCJACK_MEMSTAT_DISABLED to disable this module.
+Print overall process and function statistics.
 
 ### memlimit
-Limit memory usage by process and function. Define
-MALLOCJACK_MEMLIMIT_DISABLED to disable this module.
+Limit memory usage by process and function.
 
