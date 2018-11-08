@@ -11,10 +11,15 @@ lib$(LIBNAME).so:
 	$(CC) -shared -fPIC $(SRC) -o lib$(LIBNAME).so $(CFLAGS) -ldl
 
 test:
-	@$(CC) test.c $(SRC) -o test $(CFLAGS) -I. -ldl
+	$(CC) test.c $(SRC) -o test $(CFLAGS) -ldl
+	$(CC) test.c -o test-ld $(CFLAGS)
+
+run: test lib$(LIBNAME).so
 	./test
+	LD_PRELOAD=$(PWD)/lib$(LIBNAME).so ./test-ld
+
 
 clean:
-	@rm -f lib$(LIBNAME).so test
+	@rm -f lib$(LIBNAME).so test test-ld
 
 .PHONY: test clean
