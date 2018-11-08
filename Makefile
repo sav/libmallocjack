@@ -1,6 +1,7 @@
 LIBNAME := mallocjack
 
-CFLAGS += -Wall -Werror -Wextra -ggdb -O0 -DDEBUG -std=gnu99
+CFLAGS += -ggdb -O0 -DDEBUG -D_GNU_SOURCE -I. \
+		  -std=gnu99 -rdynamic -Wall -Werror -Wextra
 
 SRC := $(LIBNAME).c
 
