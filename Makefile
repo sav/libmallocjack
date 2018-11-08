@@ -8,7 +8,7 @@ SRC := $(LIBNAME).c
 all: lib$(LIBNAME).so test
 
 lib$(LIBNAME).so:
-	@$(CC) -shared -fPIC $(SRC) -o lib$(LIBNAME).so $(CFLAGS) -I. -ldl
+	$(CC) -shared -fPIC $(SRC) -o lib$(LIBNAME).so $(CFLAGS) -ldl
 
 test:
 	@$(CC) test.c $(SRC) -o test $(CFLAGS) -I. -ldl
