@@ -1,17 +1,17 @@
 LIBNAME := mallocjack
 
-CFLAGS += -ggdb -O0 -DDEBUG -D_GNU_SOURCE -I. \
-		  -std=gnu99 -rdynamic -Wall -Werror -Wextra
+CFLAGS += -ggdb -O0 -DDEBUG -D_GNU_SOURCE -I. -ldl \
+	-std=gnu99 -rdynamic -Wall -Werror -Wextra
 
 SRC := $(LIBNAME).c
 
 all: lib$(LIBNAME).so test
 
 lib$(LIBNAME).so:
-	$(CC) -shared -fPIC $(SRC) -o lib$(LIBNAME).so $(CFLAGS) -ldl
+	$(CC) -shared -fPIC $(SRC) -o lib$(LIBNAME).so $(CFLAGS)
 
 test:
-	$(CC) test.c $(SRC) -o test $(CFLAGS) -ldl
+	$(CC) test.c $(SRC) -o test $(CFLAGS)
 	$(CC) test.c -o test-ld $(CFLAGS)
 
 run: test lib$(LIBNAME).so
@@ -24,4 +24,4 @@ profile:
 clean:
 	@rm -f lib$(LIBNAME).so test test-ld
 
-.PHONY: test clean
+.PHONY: test profile clean

@@ -26,19 +26,21 @@
 #ifndef __APPLE__
 #include <malloc.h>
 #endif
-
 #include <dlfcn.h>
 #include <execinfo.h>
+#include <gnu/lib-names.h>
 
 #define uthash_malloc(size)     libc.malloc(size)
 #define uthash_free(ptr, size)  libc.free(ptr)
-#include <uthash.h>
 
+#include <uthash.h>
+#include <list.h>
 #include <mallocjack.h>
 
-#define BTMAX       32 /* at least 4 */
-#define BTKEYPART   64
-#define BTKEYMAX    ((BTKEYPART + 1) * BTMAX)
+#define BTMAX           32
+#define BTKEYPART       64
+#define BTKEYMAX        ((BTKEYPART + 1) * BTMAX)
+#define LOCALMEMSIZE    1024
 
 #define debug(...) do {                 \
     unhook++;                           \
@@ -55,20 +57,12 @@
     exit(1);                            \
 } while(0)
 
-struct hooks {
-    void *(*malloc)(size_t);
-    void *(*calloc)(size_t, size_t);
-    void *(*realloc)(void *, size_t);
-    void *(*memalign)(size_t, size_t);
-    void (*free)(void *);
-} libc;
-
 static int unhook;
 
 struct memstat_ctx {
     size_t total;
     size_t freed;
-} stat;
+} stats;
 
 struct meminfo {
     void *ptr;
@@ -87,6 +81,14 @@ struct callinfo {
 
 struct callinfo *callers;
 
+struct hooks {
+    void *(*malloc)(size_t);
+    void *(*calloc)(size_t, size_t);
+    void *(*realloc)(void *, size_t);
+    void *(*memalign)(size_t, size_t);
+    void (*free)(void *);
+} libc;
+
 void memstat_atexit(void)
 {
     struct callinfo *ptr, *tmp;
@@ -97,15 +99,16 @@ void memstat_atexit(void)
         libc.free(ptr->caller);
         libc.free(ptr);
     }
-    debug("[=] allocated %zu bytes, reed %zu bytes, leaked %zu bytes\n",
-          stat.total, stat.freed , stat.total - stat.freed);
+    debug("[=] allocated %zu bytes, freed %zu bytes. "
+          "still reachable: %zu bytes\n", stats.total, stats.freed ,
+          stats.total - stats.freed);
 }
 
 static char *callinfo_skey(size_t skip)
 {
     void *stack[BTMAX];
+    char buf[BTKEYMAX], **syms, *ptr, *ret;
     size_t i, n, pos, depth;
-    char *ptr, **syms, buf[BTKEYMAX], *ret;
 
     ++unhook;
     depth = backtrace(stack, BTMAX);
@@ -161,64 +164,59 @@ static struct meminfo* meminfo_new(void *ptr, size_t size)
 static void memstat_malloc(size_t size, void *ret)
 {
     struct meminfo *info;
-    if (!ret) {
-        err("%s: malloc failed\n", __FUNCTION__);
-        return;
-    }
+    if (!ret) return;
+    callinfo_add(size);
+    stats.total += size;
     info = meminfo_new(ret, size);
     HASH_ADD_PTR(chunks, ptr, info);
-    stat.total += size;
-    callinfo_add(size);
 }
 
 static void memstat_calloc(size_t nmemb, size_t size, void *ret)
 {
     struct meminfo *info;
-    if (!ret) {
-        err("%s: calloc failed\n", __FUNCTION__);
-        return;
-    }
+    if (!ret) return;
+    callinfo_add(nmemb * size);
+    stats.total += nmemb * size;
     info = meminfo_new(ret, nmemb * size);
     HASH_ADD_PTR(chunks, ptr, info);
-    stat.total += nmemb * size;
-    callinfo_add(nmemb * size);
 }
 
 static void memstat_realloc(void *ptr, size_t size, void *ret)
 {
-    struct meminfo *info;
-    if (!ret) {
-        err("%s: calloc failed\n", __FUNCTION__);
-        return;
-    }
+    struct meminfo *info, *rep, *tmp;
+    if (!ret) return;
     HASH_FIND_PTR(chunks, &ptr, info);
-    stat.total -= info->size - size;
-    callinfo_add(size - info->size);
-    HASH_DEL(chunks, info);
-    libc.free(info);
-    info = meminfo_new(ret, size);
-    HASH_ADD_PTR(chunks, ptr, info);
+    if (!info) {
+        callinfo_add(size);
+        stats.total += size;
+        info = meminfo_new(ret, size);
+        HASH_ADD_PTR(chunks, ptr, info);
+    } else {
+        callinfo_add(size - info->size);
+        stats.total -= info->size - size;
+        rep = meminfo_new(ret, size);
+        HASH_REPLACE_PTR(chunks, ptr, rep, tmp);
+        libc.free(tmp);
+    }
 }
 
 static void memstat_memalign(size_t align, size_t size, void *ret)
 {
     struct meminfo *info;
-    if (!ret) {
-        err("%s: memalign failed\n", __FUNCTION__);
-        return; 
-    }
+    if (!ret) return;
+    callinfo_add(size + (align - size % align) % align);
+    stats.total += size + (align - size % align) % align;
     info = meminfo_new(ret, size);
     HASH_ADD_PTR(chunks, ptr, info);
-    stat.total += size + (align - size % align) % align;
-    callinfo_add(size + (align - size % align) % align);
 }
 
 static void memstat_free(void *ptr)
 {
     struct meminfo *info;
+    if (!ptr) return;
     HASH_FIND_PTR(chunks, &ptr, info);
-    stat.freed += info->size;
     callinfo_add(-info->size);
+    stats.freed += info->size;
     HASH_DEL(chunks, info);
     libc.free(info);
 }
@@ -298,29 +296,30 @@ void mjtrace_del(struct mjtrace *trace)
 
 static void init()
 {
+    void *handle;
+    if (unhook) return;
+
     unhook++;
-    libc.malloc    = dlsym(RTLD_NEXT, "malloc");
-    libc.calloc    = dlsym(RTLD_NEXT, "calloc");
-    libc.realloc   = dlsym(RTLD_NEXT, "realloc");
-    libc.memalign  = dlsym(RTLD_NEXT, "memalign");
-    libc.free      = dlsym(RTLD_NEXT, "free");
+    handle         = dlopen(LIBC_SO, RTLD_NOW);
+    assert(!!handle);
+    libc.malloc    = dlsym(handle, "malloc");
+    libc.calloc    = dlsym(handle, "calloc");
+    libc.realloc   = dlsym(handle, "realloc");
+    libc.memalign  = dlsym(handle, "memalign");
+    libc.free      = dlsym(handle, "free");
+    dlclose(handle);
     unhook--;
-    
+
     if (!libc.malloc || !libc.realloc || !libc.free ||
         !libc.calloc || !libc.memalign )
         fail("%s: dyld error: %s\n", __FUNCTION__, dlerror());
-    
-    atexit(memstat_atexit);
+
     mjfilter_add(&memlimit);
     mjtrace_add(&memstat);
+    atexit(memstat_atexit);
 }
 
-#define HOOK_CHECK(func, ...) {                                \
-    if (!libc.func) init();                                    \
-    if (unhook) return libc.func(__VA_ARGS__);                 \
-}
-
-#define ALLOC_FILTER(func, ...) {                              \
+#define CALL_FILTERS(func, ...) {                              \
     struct list *entry;                                        \
     struct mjfilter *filter;                                   \
     list_for_each(entry, &filters) {                           \
@@ -330,12 +329,12 @@ static void init()
     }                                                          \
 }
 
-#define ALLOC_TRACE(func, ...) {                               \
+#define CALL_TRACES(func, ...) {                               \
     struct list *entry;                                        \
     struct mjtrace *trace;                                     \
     list_for_each(entry, &traces) {                            \
         trace = list_entry(entry, struct mjtrace, list);       \
-        if (trace->func) trace->func(__VA_ARGS__, ret);        \
+        if (trace->func) trace->func(__VA_ARGS__);             \
     }                                                          \
 }
 
@@ -358,42 +357,59 @@ static void init()
     }                                                          \
 }
 
+struct memloc {
+    char buf[LOCALMEMSIZE];
+    int pos;
+} mem;
+
+static void *local_alloc(size_t size)
+{
+    void *ptr = mem.buf + mem.pos;
+    assert(mem.pos + size < LOCALMEMSIZE);
+    mem.pos += size;
+    return ptr;
+}
+
 void *malloc(size_t size)
 {
     void *ret;
-
     if (!libc.malloc) init();
-    if (unhook) return libc.malloc(size);
+    if (unhook)
+        return libc.malloc ? libc.malloc(size) : local_alloc(size);
 
-    ALLOC_FILTER(malloc, size);
+    CALL_FILTERS(malloc, size);
     ret = libc.malloc(size);
-    ALLOC_TRACE(malloc, size);
+    CALL_TRACES(malloc, size, ret);
     return ret;
 }
 
 void *calloc(size_t nmemb, size_t size)
 {
     void *ret;
-
     if (!libc.calloc) init();
-    if (unhook) return libc.calloc(nmemb, size);
+    if (unhook)
+        return libc.calloc ? libc.calloc(nmemb, size)
+            : /*.bss*/ local_alloc(size);
 
-    ALLOC_FILTER(calloc, nmemb, size);
+    CALL_FILTERS(calloc, nmemb, size);
     ret = libc.calloc(nmemb, size);
-    ALLOC_TRACE(calloc, nmemb, size);
+    CALL_TRACES(calloc, nmemb, size, ret);
     return ret;
 }
 
 void *realloc(void *ptr, size_t size)
 {
-    void *ret;
-
+    void *ret = NULL;
     if (!libc.realloc) init();
     if (unhook) return libc.realloc(ptr, size);
 
-    ALLOC_FILTER(realloc, ptr, size);
-    ret = libc.realloc(ptr, size);
-    ALLOC_TRACE(realloc, ptr, size);
+    if (!ptr) {
+        ptr = libc.malloc(size);
+        ret = ptr;
+    }
+    CALL_FILTERS(realloc, ptr, size);
+    if (!ret) ret = libc.realloc(ptr, size);
+    CALL_TRACES(realloc, ptr, size, ret);
     return ret;
 }
 
@@ -410,12 +426,11 @@ void free(void *ptr)
 void *memalign(size_t align, size_t size)
 {
     void *ret;
-
     if (!libc.memalign) init();
     if (unhook) libc.memalign(align, size);
 
-    ALLOC_FILTER(memalign, align, size);
+    CALL_FILTERS(memalign, align, size);
     ret = libc.memalign(align, size);
-    ALLOC_TRACE(memalign, align, size);
+    CALL_TRACES(memalign, align, size, ret);
     return ret;
 }
