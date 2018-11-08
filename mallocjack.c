@@ -16,73 +16,214 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <assert.h>
 
 #include <unistd.h>
-#include <dlfcn.h>
+#ifndef __APPLE__
 #include <malloc.h>
+#endif
+
+#include <dlfcn.h>
+#include <execinfo.h>
+
+#define uthash_malloc(size)     libc.malloc(size)
+#define uthash_free(ptr, size)  libc.free(ptr)
+#include <uthash.h>
 
 #include <mallocjack.h>
 
-#define BTLEN         1
-#define MEMMAX        64
-#define PRINTMAX      128
+#define BTMAX       32 /* at least 4 */
+#define BTKEYPART   64
+#define BTKEYMAX    ((BTKEYPART + 1) * BTMAX)
 
-#define print_nobuf(fd, ...) do {                            \
-    char buf[PRINTMAX];                                      \
-    int n = snprintf(buf, PRINTMAX, __VA_ARGS__);            \
-    (void) write((fd), buf, n);                              \
+#define debug(...) do {                 \
+    unhook++;                           \
+    fprintf(stderr, __VA_ARGS__);       \
+    unhook--;                           \
 } while(0)
 
-#define fail(fmt, ...) do {                                  \
-    print_nobuf(STDERR_FILENO, "error! " fmt, __VA_ARGS__);  \
-    exit(1);                                                 \
+#define err(fmt, ...) do {              \
+    debug("error! " fmt, __VA_ARGS__);  \
 } while(0)
 
-#define debug(...) print_nobuf(STDERR_FILENO, __VA_ARGS__)
-    
-struct mjack {
-    void *(*malloc)   (size_t);
-    void *(*calloc)   (size_t, size_t);
-    void *(*realloc)  (void *, size_t);
-    void *(*memalign) (size_t, size_t);
-    void  (*free)     (void *);
+#define fail(fmt, ...) do {             \
+    err(fmt, __VA_ARGS__);              \
+    exit(1);                            \
+} while(0)
+
+struct hooks {
+    void *(*malloc)(size_t);
+    void *(*calloc)(size_t, size_t);
+    void *(*realloc)(void *, size_t);
+    void *(*memalign)(size_t, size_t);
+    void (*free)(void *);
+} libc;
+
+static int unhook;
+
+struct memstat_ctx {
+    size_t total;
+    size_t freed;
+} stat;
+
+struct meminfo {
+    void *ptr;
+    size_t size;
+    UT_hash_handle hh;
 };
 
-struct mjack libc;
-static bool started = false;
+struct meminfo *chunks;
 
-static void memstat_malloc(size_t size, void *ptr)
+struct callinfo {
+    char *caller;
+    size_t size;
+    size_t freed;
+    UT_hash_handle hh;
+};
+
+struct callinfo *callers;
+
+void memstat_atexit(void)
 {
-    debug("malloc(%zu) = %p\n", size, ptr);
+    struct callinfo *ptr, *tmp;
+    HASH_ITER(hh, callers, ptr, tmp) {
+        HASH_DEL(callers, ptr);
+        debug("[+] caller allocated %zu bytes, freed %zu bytes:\n%s\n",
+              ptr->size, ptr->freed, ptr->caller);
+        libc.free(ptr->caller);
+        libc.free(ptr);
+    }
+    debug("[=] allocated %zu bytes, reed %zu bytes, leaked %zu bytes\n",
+          stat.total, stat.freed , stat.total - stat.freed);
+}
+
+static char *callinfo_skey(size_t skip)
+{
+    void *stack[BTMAX];
+    size_t i, n, pos, depth;
+    char *ptr, **syms, buf[BTKEYMAX], *ret;
+
+    ++unhook;
+    depth = backtrace(stack, BTMAX);
+    syms = backtrace_symbols(stack, depth);
+    --unhook;
+
+    for (i = 1 + skip, pos = 0; i < depth; i++) {
+        ptr = strchr(syms[i], '+');
+        if (!ptr) ptr = strchr(syms[i], ')');
+        n = (size_t)(ptr - syms[i]);
+        memcpy(buf + pos, syms[i], n);
+        buf[pos + n] = ')';
+        buf[pos + n + 1] = '\n';
+        pos += n + 2;
+    }
+
+    buf[pos - 1] = '\0';
+    libc.free(syms);
+    ++unhook;
+    ret = strdup(buf);
+    --unhook;
+    return ret;
+}
+
+static void callinfo_add(ssize_t size)
+{
+    struct callinfo *info;
+    char *caller = callinfo_skey(3); /* this, previous and libc */
+    HASH_FIND_STR(callers, caller, info);
+    if (info) {
+        libc.free(caller);
+        info->size += size > 0 ? size : 0;
+        info->freed += size < 0 ? -size : 0;
+    } else {
+        info = libc.malloc(sizeof(struct callinfo));
+        info->caller = caller;
+        info->size = size > 0 ? size : 0;
+        info->freed = size < 0 ? -size : 0;
+        HASH_ADD_STR(callers, caller, info);
+    }    
+}
+
+static struct meminfo* meminfo_new(void *ptr, size_t size)
+{
+    struct meminfo *info = libc.malloc(sizeof(struct meminfo));
+    if (info) {
+        info->ptr = ptr;
+        info->size = size;
+    }
+    return info;
+}
+
+static void memstat_malloc(size_t size, void *ret)
+{
+    struct meminfo *info;
+    if (!ret) {
+        err("%s: malloc failed\n", __FUNCTION__);
+        return;
+    }
+    info = meminfo_new(ret, size);
+    HASH_ADD_PTR(chunks, ptr, info);
+    stat.total += size;
+    callinfo_add(size);
 }
 
 static void memstat_calloc(size_t nmemb, size_t size, void *ret)
 {
-    debug("calloc(%zu, %zu) = %p\n", nmemb, size, ret);
+    struct meminfo *info;
+    if (!ret) {
+        err("%s: calloc failed\n", __FUNCTION__);
+        return;
+    }
+    info = meminfo_new(ret, nmemb * size);
+    HASH_ADD_PTR(chunks, ptr, info);
+    stat.total += nmemb * size;
+    callinfo_add(nmemb * size);
 }
 
 static void memstat_realloc(void *ptr, size_t size, void *ret)
 {
-    debug("realloc(%p, %zu) = %p\n", ptr, size, ret);
+    struct meminfo *info;
+    if (!ret) {
+        err("%s: calloc failed\n", __FUNCTION__);
+        return;
+    }
+    HASH_FIND_PTR(chunks, &ptr, info);
+    stat.total -= info->size - size;
+    callinfo_add(size - info->size);
+    HASH_DEL(chunks, info);
+    libc.free(info);
+    info = meminfo_new(ret, size);
+    HASH_ADD_PTR(chunks, ptr, info);
 }
 
-static void memstat_memalign(size_t alignment, size_t size, void *ret)
+static void memstat_memalign(size_t align, size_t size, void *ret)
 {
-    debug("memalign(%zu, %zu) = %p\n", alignment, size, ret);
+    struct meminfo *info;
+    if (!ret) {
+        err("%s: memalign failed\n", __FUNCTION__);
+        return; 
+    }
+    info = meminfo_new(ret, size);
+    HASH_ADD_PTR(chunks, ptr, info);
+    stat.total += size + (align - size % align) % align;
+    callinfo_add(size + (align - size % align) % align);
 }
 
 static void memstat_free(void *ptr)
 {
-    debug("free(%p)\n", ptr);
+    struct meminfo *info;
+    HASH_FIND_PTR(chunks, &ptr, info);
+    stat.freed += info->size;
+    callinfo_add(-info->size);
+    HASH_DEL(chunks, info);
+    libc.free(info);
 }
 
-static struct mjack_trace memstat = {
+static struct mjtrace memstat = {
     .malloc    = memstat_malloc,
     .calloc    = memstat_calloc,
     .realloc   = memstat_realloc,
@@ -110,9 +251,9 @@ static bool memlimit_realloc(void *ptr, size_t size)
     return false;
 }
 
-static bool memlimit_memalign(size_t alignment, size_t size)
+static bool memlimit_memalign(size_t align, size_t size)
 {
-    (void) alignment;
+    (void) align;
     (void) size;
     return false;
 }
@@ -123,7 +264,7 @@ static bool memlimit_free(void *ptr)
     return false;
 }
 
-static struct mjack_filter memlimit = {
+static struct mjfilter memlimit = {
     .malloc    = memlimit_malloc,
     .calloc    = memlimit_calloc,
     .realloc   = memlimit_realloc,
@@ -133,173 +274,148 @@ static struct mjack_filter memlimit = {
 
 LIST_HEAD(filters);
 
-void mjack_filter_add(struct mjack_filter *filter)
+void mjfilter_add(struct mjfilter *filter)
 {
     list_add(&filter->list, &filters);
 }
 
-void mjack_filter_del(struct mjack_filter *filter)
+void mjfilter_del(struct mjfilter *filter)
 {
     list_del(&filter->list);
 }
 
 LIST_HEAD(traces);
 
-void mjack_trace_add(struct mjack_trace *trace)
+void mjtrace_add(struct mjtrace *trace)
 {
     list_add(&trace->list, &traces);
 }
 
-void mjack_trace_del(struct mjack_trace *trace)
+void mjtrace_del(struct mjtrace *trace)
 {
     list_del(&trace->list);
 }
 
 static void init()
 {
-    started        = true;
+    unhook++;
     libc.malloc    = dlsym(RTLD_NEXT, "malloc");
     libc.calloc    = dlsym(RTLD_NEXT, "calloc");
     libc.realloc   = dlsym(RTLD_NEXT, "realloc");
     libc.memalign  = dlsym(RTLD_NEXT, "memalign");
     libc.free      = dlsym(RTLD_NEXT, "free");
-
+    unhook--;
+    
     if (!libc.malloc || !libc.realloc || !libc.free ||
         !libc.calloc || !libc.memalign )
         fail("%s: dyld error: %s\n", __FUNCTION__, dlerror());
-
-    mjack_filter_add(&memlimit);
-    mjack_trace_add(&memstat);
+    
+    atexit(memstat_atexit);
+    mjfilter_add(&memlimit);
+    mjtrace_add(&memstat);
 }
 
-/* Eventually `dlsym` can call `malloc` so we need to have our own
- * allocator until we're done loading all symbols. A few bytes and
- * a couple of calls, that's hopefully what we have to handle so 
- * the allocator can be the simplest and smallest possible.
- */
-
-static char mempool[MEMMAX];
-static size_t mempos;
-
-static void *alloc(size_t size)
-{
-    void *ptr = mempool + mempos;
-    if (mempos + size >= MEMMAX)
-        fail("%s: out of memory", __FUNCTION__);
-    mempos += size;
-    return ptr;
+#define HOOK_CHECK(func, ...) {                                \
+    if (!libc.func) init();                                    \
+    if (unhook) return libc.func(__VA_ARGS__);                 \
 }
 
-/* GNU Libc declares these functions as weak symbols so it's possible
- * to link against the code below directly. If the target Libc doesn't
- * provide such facility though make a shared library and use LD_PRELOAD.
- */
+#define ALLOC_FILTER(func, ...) {                              \
+    struct list *entry;                                        \
+    struct mjfilter *filter;                                   \
+    list_for_each(entry, &filters) {                           \
+        filter = list_entry(entry, struct mjfilter, list);     \
+        if (filter->func && filter->func(__VA_ARGS__))         \
+            return NULL;                                       \
+    }                                                          \
+}
+
+#define ALLOC_TRACE(func, ...) {                               \
+    struct list *entry;                                        \
+    struct mjtrace *trace;                                     \
+    list_for_each(entry, &traces) {                            \
+        trace = list_entry(entry, struct mjtrace, list);       \
+        if (trace->func) trace->func(__VA_ARGS__, ret);        \
+    }                                                          \
+}
+
+#define FREE_FILTER(func, ...) {                               \
+    struct list *entry;                                        \
+    struct mjfilter *filter;                                   \
+    list_for_each(entry, &filters) {                           \
+        filter = list_entry(entry, struct mjfilter, list);     \
+        if (filter->func && filter->func(__VA_ARGS__))         \
+            return;                                            \
+    }                                                          \
+}
+
+#define FREE_TRACE(func, ...) {                                \
+    struct list *entry;                                        \
+    struct mjtrace *trace;                                     \
+    list_for_each(entry, &traces) {                            \
+        trace = list_entry(entry, struct mjtrace, list);       \
+        if (trace->func) trace->func(__VA_ARGS__);             \
+    }                                                          \
+}
 
 void *malloc(size_t size)
 {
-    struct list *entry;
-    struct mjack_filter *filter;
-    struct mjack_trace *trace;
     void *ret;
 
-    if (!libc.malloc && started) return alloc(size);
-    else if (!libc.malloc) init();
+    if (!libc.malloc) init();
+    if (unhook) return libc.malloc(size);
 
-    list_for_each(entry, &filters) {
-        filter = list_entry(entry, struct mjack_filter, list);
-        if (filter->malloc && filter->malloc(size))
-            return NULL;
-    }
+    ALLOC_FILTER(malloc, size);
     ret = libc.malloc(size);
-    list_for_each(entry, &traces) {
-        trace = list_entry(entry, struct mjack_trace, list);
-        if (trace->malloc) trace->malloc(size, ret);
-    }
+    ALLOC_TRACE(malloc, size);
     return ret;
 }
 
 void *calloc(size_t nmemb, size_t size)
 {
-    struct list *entry;
-    struct mjack_filter *filter;
-    struct mjack_trace *trace;
     void *ret;
 
-    if (!libc.malloc) init();
+    if (!libc.calloc) init();
+    if (unhook) return libc.calloc(nmemb, size);
 
-    list_for_each(entry, &filters) {
-        filter = list_entry(entry, struct mjack_filter, list);
-        if (filter->calloc && filter->calloc(nmemb, size))
-            return NULL;
-    }
+    ALLOC_FILTER(calloc, nmemb, size);
     ret = libc.calloc(nmemb, size);
-    list_for_each(entry, &traces) {
-        trace = list_entry(entry, struct mjack_trace, list);
-        if (trace->calloc) trace->calloc(nmemb, size, ret);
-    }
+    ALLOC_TRACE(calloc, nmemb, size);
     return ret;
 }
 
 void *realloc(void *ptr, size_t size)
 {
-    struct list *entry;
-    struct mjack_filter *filter;
-    struct mjack_trace *trace;
     void *ret;
 
     if (!libc.realloc) init();
+    if (unhook) return libc.realloc(ptr, size);
 
-    list_for_each(entry, &filters) {
-        filter = list_entry(entry, struct mjack_filter, list);
-        if (filter->realloc && filter->realloc(ptr, size))
-            return NULL;
-    }
+    ALLOC_FILTER(realloc, ptr, size);
     ret = libc.realloc(ptr, size);
-    list_for_each(entry, &traces) {
-        trace = list_entry(entry, struct mjack_trace, list);
-        if (trace->realloc) trace->realloc(ptr, size, ret);
-    }
+    ALLOC_TRACE(realloc, ptr, size);
     return ret;
 }
 
 void free(void *ptr)
 {
-    struct list *entry;
-    struct mjack_filter *filter;
-    struct mjack_trace *trace;
+    if (!libc.free) init();
+    if (unhook) return libc.free(ptr);
 
-    if (!libc.free) fail("%s: called before malloc", __FUNCTION__);
-
-    list_for_each(entry, &filters) {
-        filter = list_entry(entry, struct mjack_filter, list);
-        if (filter->free && filter->free(ptr))
-            return;
-    }
+    FREE_FILTER(free, ptr);
     libc.free(ptr);
-    list_for_each(entry, &traces) {
-        trace = list_entry(entry, struct mjack_trace, list);
-        if (trace->free) trace->free(ptr);
-    }
+    FREE_TRACE(free, ptr);
 }
 
-void *memalign(size_t alignment, size_t size)
+void *memalign(size_t align, size_t size)
 {
-    struct list *entry;
-    struct mjack_filter *filter;
-    struct mjack_trace *trace;
     void *ret;
 
     if (!libc.memalign) init();
+    if (unhook) libc.memalign(align, size);
 
-    list_for_each(entry, &filters) {
-        filter = list_entry(entry, struct mjack_filter, list);
-        if (filter->memalign && filter->memalign(alignment, size))
-            return NULL;
-    }
-    ret = libc.memalign(alignment, size);
-    list_for_each(entry, &traces) {
-        trace = list_entry(entry, struct mjack_trace, list);
-        if (trace->memalign) trace->memalign(alignment, size, ret);
-    }
+    ALLOC_FILTER(memalign, align, size);
+    ret = libc.memalign(align, size);
+    ALLOC_TRACE(memalign, align, size);
     return ret;
 }
