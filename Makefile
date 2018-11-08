@@ -18,6 +18,8 @@ run: test lib$(LIBNAME).so
 	./test
 	LD_PRELOAD=$(PWD)/lib$(LIBNAME).so ./test-ld
 
+profile:
+	valgrind -v --leak-check=full --show-reachable=yes ./test
 
 clean:
 	@rm -f lib$(LIBNAME).so test test-ld
