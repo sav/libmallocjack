@@ -23,12 +23,12 @@
 #include <assert.h>
 
 #include <unistd.h>
+#include <dlfcn.h>
+#include <execinfo.h>
+
 #ifndef __APPLE__
 #include <malloc.h>
 #endif
-#include <dlfcn.h>
-#include <execinfo.h>
-#include <gnu/lib-names.h>
 
 #define uthash_malloc(size)     libc.malloc(size)
 #define uthash_free(ptr, size)  libc.free(ptr)
@@ -37,10 +37,11 @@
 #include <list.h>
 #include <mallocjack.h>
 
+#define LOCALMEMSIZE    1024
+
 #define BTMAX           32
 #define BTKEYPART       64
 #define BTKEYMAX        ((BTKEYPART + 1) * BTMAX)
-#define LOCALMEMSIZE    1024
 
 #define debug(...) do {                 \
     unhook++;                           \
@@ -89,9 +90,15 @@ struct hooks {
     void (*free)(void *);
 } libc;
 
+static int callrcmpsize(struct callinfo *c1, struct callinfo *c2)
+{
+    return c2->size - c1->size;
+}
+
 void memstat_atexit(void)
 {
     struct callinfo *ptr, *tmp;
+    HASH_SORT(callers, callrcmpsize);
     HASH_ITER(hh, callers, ptr, tmp) {
         HASH_DEL(callers, ptr);
         debug("[+] caller allocated %zu bytes, freed %zu bytes:\n%s\n",
@@ -296,18 +303,14 @@ void mjtrace_del(struct mjtrace *trace)
 
 static void init()
 {
-    void *handle;
     if (unhook) return;
 
     unhook++;
-    handle         = dlopen(LIBC_SO, RTLD_NOW);
-    assert(!!handle);
-    libc.malloc    = dlsym(handle, "malloc");
-    libc.calloc    = dlsym(handle, "calloc");
-    libc.realloc   = dlsym(handle, "realloc");
-    libc.memalign  = dlsym(handle, "memalign");
-    libc.free      = dlsym(handle, "free");
-    dlclose(handle);
+    libc.malloc    = dlsym(RTLD_NEXT, "malloc");
+    libc.calloc    = dlsym(RTLD_NEXT, "calloc");
+    libc.realloc   = dlsym(RTLD_NEXT, "realloc");
+    libc.memalign  = dlsym(RTLD_NEXT, "memalign");
+    libc.free      = dlsym(RTLD_NEXT, "free");
     unhook--;
 
     if (!libc.malloc || !libc.realloc || !libc.free ||
