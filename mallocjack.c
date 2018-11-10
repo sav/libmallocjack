@@ -124,14 +124,14 @@ static char *callinfo_skey(size_t skip)
 
     for (i = 1 + skip, pos = 0; i < depth; i++) {
         ptr = strchr(syms[i], '+');
-        if (!ptr) ptr = strchr(syms[i], ')');
+        if (!ptr)
+            ptr = strchr(syms[i], ')');
         n = (size_t)(ptr - syms[i]);
         memcpy(buf + pos, syms[i], n);
         buf[pos + n] = ')';
         buf[pos + n + 1] = '\n';
         pos += n + 2;
     }
-
     buf[pos - 1] = '\0';
     libc.free(syms);
     ++unhook;
@@ -171,7 +171,8 @@ static struct meminfo* meminfo_new(void *ptr, size_t size)
 static void memstat_malloc(size_t size, void *ret)
 {
     struct meminfo *info;
-    if (!ret) return;
+    if (!ret)
+        return;
     callinfo_add(size);
     stats.total += size;
     info = meminfo_new(ret, size);
@@ -181,7 +182,8 @@ static void memstat_malloc(size_t size, void *ret)
 static void memstat_calloc(size_t nmemb, size_t size, void *ret)
 {
     struct meminfo *info;
-    if (!ret) return;
+    if (!ret)
+        return;
     callinfo_add(nmemb * size);
     stats.total += nmemb * size;
     info = meminfo_new(ret, nmemb * size);
@@ -191,7 +193,8 @@ static void memstat_calloc(size_t nmemb, size_t size, void *ret)
 static void memstat_realloc(void *ptr, size_t size, void *ret)
 {
     struct meminfo *info, *rep, *tmp;
-    if (!ret) return;
+    if (!ret)
+        return;
     HASH_FIND_PTR(chunks, &ptr, info);
     if (!info) {
         callinfo_add(size);
@@ -210,7 +213,8 @@ static void memstat_realloc(void *ptr, size_t size, void *ret)
 static void memstat_memalign(size_t align, size_t size, void *ret)
 {
     struct meminfo *info;
-    if (!ret) return;
+    if (!ret)
+        return;
     callinfo_add(size + (align - size % align) % align);
     stats.total += size + (align - size % align) % align;
     info = meminfo_new(ret, size);
@@ -220,7 +224,8 @@ static void memstat_memalign(size_t align, size_t size, void *ret)
 static void memstat_free(void *ptr)
 {
     struct meminfo *info;
-    if (!ptr) return;
+    if (!ptr)
+        return;
     HASH_FIND_PTR(chunks, &ptr, info);
     callinfo_add(-info->size);
     stats.freed += info->size;
@@ -303,7 +308,8 @@ void mjtrace_del(struct mjtrace *trace)
 
 static void init()
 {
-    if (unhook) return;
+    if (unhook)
+        return;
 
     unhook++;
     libc.malloc    = dlsym(RTLD_NEXT, "malloc");
@@ -376,7 +382,8 @@ static void *local_alloc(size_t size)
 void *malloc(size_t size)
 {
     void *ret;
-    if (!libc.malloc) init();
+    if (!libc.malloc)
+        init();
     if (unhook)
         return libc.malloc ? libc.malloc(size) : local_alloc(size);
 
@@ -389,7 +396,8 @@ void *malloc(size_t size)
 void *calloc(size_t nmemb, size_t size)
 {
     void *ret;
-    if (!libc.calloc) init();
+    if (!libc.calloc)
+        init();
     if (unhook)
         return libc.calloc ? libc.calloc(nmemb, size)
             : /*.bss*/ local_alloc(size);
@@ -403,8 +411,10 @@ void *calloc(size_t nmemb, size_t size)
 void *realloc(void *ptr, size_t size)
 {
     void *ret = NULL;
-    if (!libc.realloc) init();
-    if (unhook) return libc.realloc(ptr, size);
+    if (!libc.realloc)
+        init();
+    if (unhook)
+        return libc.realloc(ptr, size);
 
     if (!ptr) {
         ptr = libc.malloc(size);
@@ -418,8 +428,10 @@ void *realloc(void *ptr, size_t size)
 
 void free(void *ptr)
 {
-    if (!libc.free) init();
-    if (unhook) return libc.free(ptr);
+    if (!libc.free)
+        init();
+    if (unhook)
+        return libc.free(ptr);
 
     FREE_FILTER(free, ptr);
     libc.free(ptr);
@@ -429,8 +441,10 @@ void free(void *ptr)
 void *memalign(size_t align, size_t size)
 {
     void *ret;
-    if (!libc.memalign) init();
-    if (unhook) libc.memalign(align, size);
+    if (!libc.memalign)
+        init();
+    if (unhook)
+        libc.memalign(align, size);
 
     CALL_FILTERS(memalign, align, size);
     ret = libc.memalign(align, size);
