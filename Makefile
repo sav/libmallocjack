@@ -1,7 +1,9 @@
 LIBNAME := mallocjack
 
-CFLAGS += -ggdb -O0 -DDEBUG -D_GNU_SOURCE -I. -ldl \
-	-std=gnu99 -rdynamic -Wall -Werror -Wextra
+CC := clang -std=gnu99
+
+CFLAGS += -ggdb -O0 -DDEBUG -D_GNU_SOURCE -I. -ldl -rdynamic \
+		  -Wall -Werror -Wextra -funwind-tables
 
 SRC := $(LIBNAME).c
 
