@@ -58,6 +58,9 @@
     exit(1);                            \
 } while(0)
 
+#define alignedsize(alignment, size)    \
+    ((size + alignment - 1) & ~(alignment - 1))
+
 static int unhook;
 
 struct memstat_ctx {
@@ -215,8 +218,9 @@ static void memstat_memalign(size_t align, size_t size, void *ret)
     struct meminfo *info;
     if (!ret)
         return;
-    callinfo_add(size + (align - size % align) % align);
-    stats.total += size + (align - size % align) % align;
+    size = alignedsize(align, size);
+    callinfo_add(size);
+    stats.total += size;
     info = meminfo_new(ret, size);
     HASH_ADD_PTR(chunks, ptr, info);
 }
@@ -308,15 +312,19 @@ void mjtrace_del(struct mjtrace *trace)
 
 static void init()
 {
+    char *libpath;
+    void *handle;
     if (unhook)
         return;
 
     unhook++;
-    libc.malloc    = dlsym(RTLD_NEXT, "malloc");
-    libc.calloc    = dlsym(RTLD_NEXT, "calloc");
-    libc.realloc   = dlsym(RTLD_NEXT, "realloc");
-    libc.memalign  = dlsym(RTLD_NEXT, "memalign");
-    libc.free      = dlsym(RTLD_NEXT, "free");
+    libpath        = getenv("MJ_PRELOAD");
+    handle         = libpath ? dlopen(libpath, RTLD_LAZY) : RTLD_NEXT;
+    libc.malloc    = dlsym(handle, "malloc");
+    libc.calloc    = dlsym(handle, "calloc");
+    libc.realloc   = dlsym(handle, "realloc");
+    libc.memalign  = dlsym(handle, "memalign");
+    libc.free      = dlsym(handle, "free");
     unhook--;
 
     if (!libc.malloc || !libc.realloc || !libc.free ||
@@ -385,7 +393,8 @@ void *malloc(size_t size)
     if (!libc.malloc)
         init();
     if (unhook)
-        return libc.malloc ? libc.malloc(size) : local_alloc(size);
+        return libc.malloc ? libc.malloc(size)
+            : local_alloc(size);
 
     CALL_FILTERS(malloc, size);
     ret = libc.malloc(size);
@@ -400,7 +409,7 @@ void *calloc(size_t nmemb, size_t size)
         init();
     if (unhook)
         return libc.calloc ? libc.calloc(nmemb, size)
-            : /*.bss*/ local_alloc(size);
+            : local_alloc(size);
 
     CALL_FILTERS(calloc, nmemb, size);
     ret = libc.calloc(nmemb, size);
@@ -414,7 +423,8 @@ void *realloc(void *ptr, size_t size)
     if (!libc.realloc)
         init();
     if (unhook)
-        return libc.realloc(ptr, size);
+        return libc.realloc ? libc.realloc(ptr, size)
+            : local_alloc(size);
 
     if (!ptr) {
         ptr = libc.malloc(size);
@@ -430,8 +440,10 @@ void free(void *ptr)
 {
     if (!libc.free)
         init();
-    if (unhook)
-        return libc.free(ptr);
+    if (unhook && libc.free)
+        libc.free(ptr);
+    else if (unhook)
+        return;
 
     FREE_FILTER(free, ptr);
     libc.free(ptr);
@@ -444,7 +456,8 @@ void *memalign(size_t align, size_t size)
     if (!libc.memalign)
         init();
     if (unhook)
-        libc.memalign(align, size);
+        return libc.memalign ? libc.memalign(align, size)
+            : local_alloc(alignedsize(align, size));
 
     CALL_FILTERS(memalign, align, size);
     ret = libc.memalign(align, size);
