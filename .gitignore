@@ -2,3 +2,9 @@
 test
 test-ld
 *.dSYM
+tags
+GPATH
+GRTAGS
+GTAGS
+*.o
+.#*

@@ -21,3 +21,15 @@ Print overall process and function statistics.
 ### memlimit
 Limit memory usage by process and function.
 
+Todo
+----
+
+* [#a] enable thread-safeness everywhere
+* [#a] use mmap in local_alloc and support free
+* [#b] port memstat to gnu malloc info api
+* [#b] detect huge page, segregation and brk/mmap
+* [#b] allow dlopen() specific targets
+* [#c] check malloc_usable_size() consistency
+* [#c] add strace-like debugging primitives
+* [#c] add ltrace-like debugging primitives
+
