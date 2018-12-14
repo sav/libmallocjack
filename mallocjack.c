@@ -67,26 +67,26 @@
 #define msg(fmt, ...)   pout(fmt "\n", __VA_ARGS__)
 #endif
 
-#define wrn(fmt, ...) do {                                     \
-   perr("warning! %s: " fmt "\n", __FUNCTION__, __VA_ARGS__);  \
+#define wrn(fmt, ...) do {                                    \
+   perr("warning! %s: " fmt "\n", __FUNCTION__, __VA_ARGS__); \
 } while(0)
 
-#define err(fmt, ...) do {                                     \
-   perr("error! %s: " fmt "\n", __FUNCTION__, __VA_ARGS__);    \
+#define err(fmt, ...) do {                                    \
+   perr("error! %s: " fmt "\n", __FUNCTION__, __VA_ARGS__);   \
 } while(0)
 
-#define die(fmt, ...) do {                                     \
-   perr("fatal! %s: " fmt "\n", __FUNCTION__, __VA_ARGS__);    \
-   exit(1);                                                    \
+#define die(fmt, ...) do {                                    \
+   perr("fatal! %s: " fmt "\n", __FUNCTION__, __VA_ARGS__);   \
+   exit(1);                                                   \
 } while(0)
 
 #ifdef DEBUG
-#define dbg(fmt, ...) do {                                     \
-   perr("debug: %s: " fmt "\n", __FUNCTION__, __VA_ARGS__);    \
+#define dbg(fmt, ...) do {                                    \
+   perr("debug: %s: " fmt "\n", __FUNCTION__, __VA_ARGS__);   \
 } while(0)
 
-#define logf(fmt, ...) do {                                    \
-   perr("called: %s(" fmt ")\n", __FUNCTION__, __VA_ARGS__);   \
+#define logf(fmt, ...) do {                                   \
+   perr("called: %s(" fmt ")\n", __FUNCTION__, __VA_ARGS__);  \
 } while(0)
 #else
 #define dbg(...) {}
@@ -94,14 +94,14 @@
 #define logf(...) {}
 #endif
 
-#define reterr(v, ...) ({     \
-   err(__VA_ARGS__);          \
-   v;                         \
+#define reterr(v, ...) ({ \
+   err(__VA_ARGS__);      \
+   v;                     \
 })
 
-#define errvoid(...) do {     \
-   err(__VA_ARGS__);          \
-   return;                    \
+#define errvoid(...) do { \
+   err(__VA_ARGS__);      \
+   return;                \
 } while(0)
 
 #define errnull(...)       reterr(NULL, __VA_ARGS__)
@@ -142,11 +142,11 @@ struct mstat_ctx {
    struct mstat_call *calls;
 } ctx;
 
-#define mstat_count(sz) do {           \
-   dbg("mstat_count(%zi)", (sz));      \
-   if ((sz) > 0)                       \
-      ctx.total += (sz);               \
-   ctx.using += (sz);                  \
+#define mstat_count(sz) do {      \
+   dbg("mstat_count(%zi)", (sz)); \
+   if ((sz) > 0)                  \
+      ctx.total += (sz);          \
+   ctx.using += (sz);             \
 } while(0)
 
 static char *mstat_call_str(void *const st[], size_t n)
@@ -241,12 +241,12 @@ static struct mstat_call *mstat_call_add(size_t d)
    return c;
 }
 
-#define mstat_alloc_call(a, c) do {    \
-   HASH_ADD_STR(a->calls, key, c);     \
+#define mstat_alloc_call(a, c) do { \
+   HASH_ADD_STR(a->calls, key, c);  \
 } while(0)
 
-#define mstat_call_alloc(c, a) do {    \
-   HASH_ADD_PTR(c->allocs, ptr, a);    \
+#define mstat_call_alloc(c, a) do { \
+   HASH_ADD_PTR(c->allocs, ptr, a); \
 } while(0)
 
 static void mstat_add(const void *r, ssize_t sz, const void *p)
@@ -262,9 +262,9 @@ static void mstat_add(const void *r, ssize_t sz, const void *p)
    if (!c)
       return;
 
-//  mstat_alloc_call(a, c);
-// XXX continue from here
-//   mstat_call_alloc(c, a);
+   // XXX continue from here
+   // mstat_call_alloc(c, a);
+   // mstat_alloc_call(a, c);
 }
 
 static void mstat_malloc(size_t sz, void *r)
@@ -409,7 +409,7 @@ static void init()
    --unhook;
 
    if (!libc.malloc || !libc.realloc || !libc.free ||
-       !libc.calloc || !libc.memalign )
+       !libc.calloc || !libc.memalign)
       die("dlsym(): %s", dlerror());
 
    assert(libc.malloc != malloc     &&
@@ -428,42 +428,42 @@ static void init()
       err("dlclose(\"%s\"): %s", lib, dlerror());
 }
 
-#define CALL_FILTERS(func, ...) {                              \
-   struct list *entry;                                         \
-   struct mjfilter *filter;                                    \
-   list_for_each(entry, &filters) {                            \
-       filter = list_entry(entry, struct mjfilter, list);      \
-       if (filter->func && filter->func(__VA_ARGS__))          \
-           return NULL;                                        \
-   }                                                           \
+#define CALL_FILTERS(func, ...) {                          \
+   struct list *entry;                                     \
+   struct mjfilter *filter;                                \
+   list_for_each(entry, &filters) {                        \
+       filter = list_entry(entry, struct mjfilter, list);  \
+       if (filter->func && filter->func(__VA_ARGS__))      \
+           return NULL;                                    \
+   }                                                       \
 }
 
-#define CALL_TRACES(func, ...) {                               \
-   struct list *entry;                                         \
-   struct mjtrace *trace;                                      \
-   list_for_each(entry, &traces) {                             \
-       trace = list_entry(entry, struct mjtrace, list);        \
-       if (trace->func) trace->func(__VA_ARGS__);              \
-   }                                                           \
+#define CALL_TRACES(func, ...) {                           \
+   struct list *entry;                                     \
+   struct mjtrace *trace;                                  \
+   list_for_each(entry, &traces) {                         \
+       trace = list_entry(entry, struct mjtrace, list);    \
+       if (trace->func) trace->func(__VA_ARGS__);          \
+   }                                                       \
 }
 
-#define FREE_FILTER(func, ...) {                               \
-   struct list *entry;                                         \
-   struct mjfilter *filter;                                    \
-   list_for_each(entry, &filters) {                            \
-       filter = list_entry(entry, struct mjfilter, list);      \
-       if (filter->func && filter->func(__VA_ARGS__))          \
-           return;                                             \
-   }                                                           \
+#define FREE_FILTER(func, ...) {                           \
+   struct list *entry;                                     \
+   struct mjfilter *filter;                                \
+   list_for_each(entry, &filters) {                        \
+       filter = list_entry(entry, struct mjfilter, list);  \
+       if (filter->func && filter->func(__VA_ARGS__))      \
+           return;                                         \
+   }                                                       \
 }
 
-#define FREE_TRACE(func, ...) {                                \
-   struct list *entry;                                         \
-   struct mjtrace *trace;                                      \
-   list_for_each(entry, &traces) {                             \
-       trace = list_entry(entry, struct mjtrace, list);        \
-       if (trace->func) trace->func(__VA_ARGS__);              \
-   }                                                           \
+#define FREE_TRACE(func, ...) {                            \
+   struct list *entry;                                     \
+   struct mjtrace *trace;                                  \
+   list_for_each(entry, &traces) {                         \
+       trace = list_entry(entry, struct mjtrace, list);    \
+       if (trace->func) trace->func(__VA_ARGS__);          \
+   }                                                       \
 }
 
 struct memloc {
